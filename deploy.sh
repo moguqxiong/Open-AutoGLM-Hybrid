@@ -87,7 +87,7 @@ install_python_packages() {
     print_info "安装 Python 依赖包..."
     
     # 升级 pip
-    pip install --upgrade pip
+    #pip install --upgrade pip
     
     # 安装依赖
     pip install pillow openai requests
@@ -145,7 +145,7 @@ download_hybrid_scripts() {
     
     # 下载 phone_controller.py (自动降级逻辑)
     # 注意: 这里需要替换为实际的下载链接
-    # wget -O ~/.autoglm/phone_controller.py https://your-link/phone_controller.py
+    wget -O ~/.autoglm/phone_controller.py https://raw.githubusercontent.com/moguqxiong/Open-AutoGLM-Hybrid/refs/heads/main/phone_controller.py
     
     # 暂时使用本地创建
     cat > ~/.autoglm/phone_controller.py << 'PYTHON_EOF'

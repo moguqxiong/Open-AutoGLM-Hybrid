@@ -1,314 +1,222 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
 # Open-AutoGLM 混合方案 - Termux 一键部署脚本
-# 版本: 1.0.0
+# 版本: 2.0.0 (基于实战避坑优化版)
 
-set -e
+set -e  # 遇到错误立即停止
 
-# 颜色定义
+# --- 颜色定义 ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# 打印函数
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+# --- 辅助函数 ---
+print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 print_header() {
     echo ""
     echo "============================================================"
-    echo "  Open-AutoGLM 混合方案 - 一键部署"
-    echo "  版本: 1.0.0"
+    echo "  Open-AutoGLM 一键部署 (v2.0 避坑版)"
+    echo "  已针对 Termux 环境进行 Rust、Pillow 及网络源优化"
     echo "============================================================"
     echo ""
 }
 
-# 检查网络连接
-check_network() {
-    print_info "检查网络连接..."
-    if ping -c 1 8.8.8.8 &> /dev/null; then
-        print_success "网络连接正常"
+# 1. 环境准备与系统库安装
+prepare_environment() {
+    print_info "步骤 1/6: 更新系统并安装底层依赖..."
+    
+    # 更新源
+    pkg update -y
+    
+    # 安装基础工具
+    pkg install git curl wget nano -y
+    
+    # [关键修复] 安装 Rust 编译器 (用于编译 jiter, pydantic-core)
+    print_info "安装 Rust 编译环境 (可能需要一点时间)..."
+    pkg install rust binutils -y
+    
+    # [关键修复] 直接安装 Termux 适配版 Pillow (避免手动编译缺库)
+    print_info "安装 Python 及 Pillow 预编译包..."
+    pkg install python python-pillow -y
+    
+    # 验证安装
+    if command -v rustc &> /dev/null; then
+        print_success "环境依赖安装完毕 (Python: $(python --version), Rust: $(rustc --version))"
     else
-        print_error "网络连接失败，请检查网络设置"
+        print_error "Rust 安装失败，脚本退出"
         exit 1
     fi
 }
 
-# 更新软件包
-update_packages() {
-    print_info "更新软件包列表..."
-    pkg update -y
-    print_success "软件包列表更新完成"
+# 2. 配置国内加速源 (解决网络卡顿)
+configure_mirrors() {
+    print_info "步骤 2/6: 配置国内镜像源..."
+
+    # 配置 Pip 清华源
+    pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+    
+    # [关键修复] 配置 Cargo 清华源 (使用 sparse+https 协议且修正 URL 结尾斜杠)
+    print_info "配置 Cargo (Rust) 加速源..."
+    mkdir -p ~/.cargo
+    
+    # 删除旧配置防止冲突
+    rm -f ~/.cargo/config
+    rm -f ~/.cargo/config.toml
+    
+    cat > ~/.cargo/config.toml << EOF
+[source.crates-io]
+replace-with = 'tuna'
+
+[source.tuna]
+registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+EOF
+    
+    # 设置 Git CLI 环境变量以防 libgit2 报错
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true
+    
+    print_success "镜像源配置完成"
 }
 
-# 安装必要软件
-install_dependencies() {
-    print_info "安装必要软件..."
+# 3. 安装 Python 核心依赖
+install_python_deps() {
+    print_info "步骤 3/6: 安装 Python 核心依赖..."
     
-    # 检查并安装 Python
-    if ! command -v python &> /dev/null; then
-        print_info "安装 Python..."
-        pkg install python -y
-    else
-        print_success "Python 已安装: $(python --version)"
-    fi
+    # 注意：Termux 中禁止 pip install --upgrade pip，已跳过
     
-    # 检查并安装 Git
-    if ! command -v git &> /dev/null; then
-        print_info "安装 Git..."
-        pkg install git -y
-    else
-        print_success "Git 已安装: $(git --version)"
-    fi
+    # 预先安装构建工具
+    print_info "安装构建工具 maturin..."
+    pip install maturin
     
-    # 安装其他工具
-    pkg install curl wget -y
+    # [高能预警] 编译 pydantic-core
+    print_info "正在安装 pydantic-core 和 openai..."
+    print_warning "⚠️ 注意：此步骤会在手机上进行编译，可能卡在 'Building wheel' 5-10分钟。"
+    print_warning "⚠️ 请耐心等待，绝对不要强制退出！"
     
-    print_success "必要软件安装完成"
-}
-
-# 安装 Python 依赖
-install_python_packages() {
-    print_info "安装 Python 依赖包..."
-    
-    # 升级 pip
-    #pip install --upgrade pip
-    
-    # 安装依赖
-    pip install pillow openai requests
+    pip install openai requests
     
     print_success "Python 依赖安装完成"
 }
 
-# 下载 Open-AutoGLM
-download_autoglm() {
-    print_info "下载 Open-AutoGLM 项目..."
+# 4. 下载项目代码
+download_project() {
+    print_info "步骤 4/6: 下载 Open-AutoGLM 项目..."
     
     cd ~
-    
     if [ -d "Open-AutoGLM" ]; then
-        print_warning "Open-AutoGLM 目录已存在"
-        read -p "是否删除并重新下载? (y/n): " confirm
-        if [ "$confirm" = "y" ]; then
-            rm -rf Open-AutoGLM
-        else
-            print_info "跳过下载，使用现有目录"
-            return
-        fi
+        print_warning "检测到 Open-AutoGLM 目录已存在，跳过 Clone"
+    else
+        git clone https://github.com/zai-org/Open-AutoGLM.git
     fi
-    
-    git clone https://github.com/zai-org/Open-AutoGLM.git
-    
-    print_success "Open-AutoGLM 下载完成"
-}
-
-# 安装 Open-AutoGLM
-install_autoglm() {
-    print_info "安装 Open-AutoGLM..."
     
     cd ~/Open-AutoGLM
     
-    # 安装项目依赖
+    # 安装项目自身依赖 (去掉 pillow，因为已经用 pkg 装过了)
+    # 使用 sed 临时从 requirements 中去掉 pillow 防止 pip 尝试重新编译
     if [ -f "requirements.txt" ]; then
+        sed -i '/Pillow/d' requirements.txt
+        sed -i '/pillow/d' requirements.txt
         pip install -r requirements.txt
     fi
     
-    # 安装 phone_agent
+    # 安装当前目录包
     pip install -e .
     
-    print_success "Open-AutoGLM 安装完成"
+    print_success "项目代码下载与安装完成"
 }
 
-# 下载混合方案脚本
-download_hybrid_scripts() {
-    print_info "下载混合方案脚本..."
+# 5. 下载混合方案脚本 (修正逻辑)
+setup_hybrid_script() {
+    print_info "步骤 5/6: 下载混合控制脚本..."
     
-    cd ~
-    
-    # 创建目录
     mkdir -p ~/.autoglm
     
-    # 下载 phone_controller.py (自动降级逻辑)
-    # 注意: 这里需要替换为实际的下载链接
-    wget -O ~/.autoglm/phone_controller.py https://raw.githubusercontent.com/moguqxiong/Open-AutoGLM-Hybrid/refs/heads/main/phone_controller.py
+    # [关键修复] 只有下载失败才生成占位文件，而不是下载后覆盖
+    TARGET_URL="https://raw.githubusercontent.com/moguqxiong/Open-AutoGLM-Hybrid/refs/heads/main/phone_controller.py"
     
-    # 暂时使用本地创建
-    cat > ~/.autoglm/phone_controller.py << 'PYTHON_EOF'
-# 这个文件会在后续步骤中创建
+    if wget -O ~/.autoglm/phone_controller.py "$TARGET_URL"; then
+        print_success "phone_controller.py 下载成功"
+    else
+        print_warning "下载失败 (可能是网络原因)，生成本地测试占位文件..."
+        cat > ~/.autoglm/phone_controller.py << 'PYTHON_EOF'
+# 这是一个占位文件，因为脚本下载失败
+print("警告: 这是一个占位文件，实际控制逻辑未加载。")
 pass
 PYTHON_EOF
-    
-    print_success "混合方案脚本下载完成"
+    fi
 }
 
-# 配置 GRS AI
-configure_grsai() {
-    print_info "配置 GRS AI..."
+# 6. 配置启动与 API
+configure_launcher() {
+    print_info "步骤 6/6: 配置启动项..."
     
+    # 询问 API Key
     echo ""
-    echo "请输入您的 GRS AI API Key:"
-    read -p "API Key: " api_key
+    echo -e "${YELLOW}请输入您的 GRS AI API Key (如果暂时没有，直接回车):${NC}"
+    read -r api_key
     
     if [ -z "$api_key" ]; then
-        print_warning "未输入 API Key，跳过配置"
-        print_warning "您可以稍后手动配置: export PHONE_AGENT_API_KEY='your_key'"
-        return
+        api_key="your_api_key_here"
     fi
     
-    # 创建配置文件
+    # 生成配置文件
     cat > ~/.autoglm/config.sh << EOF
 #!/data/data/com.termux/files/usr/bin/bash
-
-# GRS AI 配置
 export PHONE_AGENT_BASE_URL="https://api.grsai.com/v1"
 export PHONE_AGENT_API_KEY="$api_key"
 export PHONE_AGENT_MODEL="gpt-4-vision-preview"
-
-# AutoGLM Helper 配置
 export AUTOGLM_HELPER_URL="http://localhost:8080"
 EOF
-    
-    # 添加到 .bashrc
+
+    # 自动加载配置
     if ! grep -q "source ~/.autoglm/config.sh" ~/.bashrc; then
         echo "" >> ~/.bashrc
-        echo "# AutoGLM 配置" >> ~/.bashrc
         echo "source ~/.autoglm/config.sh" >> ~/.bashrc
     fi
     
-    # 立即加载配置
-    source ~/.autoglm/config.sh
-    
-    print_success "GRS AI 配置完成"
-}
-
-# 创建启动脚本
-create_launcher() {
-    print_info "创建启动脚本..."
-    
-    # 创建 autoglm 命令
+    # 创建启动命令
+    mkdir -p ~/bin
     cat > ~/bin/autoglm << 'LAUNCHER_EOF'
 #!/data/data/com.termux/files/usr/bin/bash
-
-# 加载配置
 source ~/.autoglm/config.sh
-
-# 启动 AutoGLM
+# 确保使用 Cargo 的配置
+export CARGO_NET_GIT_FETCH_WITH_CLI=true
 cd ~/Open-AutoGLM
 python -m phone_agent.cli
 LAUNCHER_EOF
     
     chmod +x ~/bin/autoglm
     
-    # 确保 ~/bin 在 PATH 中
+    # 将 ~/bin 加入 PATH
     if ! grep -q 'export PATH=$PATH:~/bin' ~/.bashrc; then
         echo 'export PATH=$PATH:~/bin' >> ~/.bashrc
     fi
-    
-    print_success "启动脚本创建完成"
+
+    # 立即生效环境变量
+    export PATH=$PATH:~/bin
 }
 
-# 检查 AutoGLM Helper
-check_helper_app() {
-    print_info "检查 AutoGLM Helper APP..."
-    
-    echo ""
-    echo "请确保您已经:"
-    echo "1. 安装了 AutoGLM Helper APK"
-    echo "2. 开启了无障碍服务权限"
-    echo ""
-    
-    read -p "是否已完成以上步骤? (y/n): " confirm
-    
-    if [ "$confirm" != "y" ]; then
-        print_warning "请先完成以上步骤，然后重新运行部署脚本"
-        print_info "APK 文件位置: 项目根目录/AutoGLM-Helper.apk"
-        print_info "安装命令: adb install AutoGLM-Helper.apk"
-        exit 0
-    fi
-    
-    # 测试连接
-    print_info "测试 AutoGLM Helper 连接..."
-    
-    if curl -s http://localhost:8080/status > /dev/null 2>&1; then
-        print_success "AutoGLM Helper 连接成功！"
-    else
-        print_warning "无法连接到 AutoGLM Helper"
-        print_info "这可能是因为:"
-        print_info "1. AutoGLM Helper 未运行"
-        print_info "2. 无障碍服务未开启"
-        print_info "3. HTTP 服务器未启动"
-        print_info ""
-        print_info "请检查后重试"
-    fi
-}
-
-# 显示完成信息
-show_completion() {
-    print_success "部署完成！"
-    
-    echo ""
-    echo "============================================================"
-    echo "  部署成功！"
-    echo "============================================================"
-    echo ""
-    echo "使用方法:"
-    echo "  1. 确保 AutoGLM Helper 已运行并开启无障碍权限"
-    echo "  2. 在 Termux 中输入: autoglm"
-    echo "  3. 输入任务，如: 打开淘宝搜索蓝牙耳机"
-    echo ""
-    echo "配置文件:"
-    echo "  ~/.autoglm/config.sh"
-    echo ""
-    echo "启动命令:"
-    echo "  autoglm"
-    echo ""
-    echo "故障排除:"
-    echo "  - 检查 AutoGLM Helper 是否运行"
-    echo "  - 检查无障碍权限是否开启"
-    echo "  - 测试连接: curl http://localhost:8080/status"
-    echo ""
-    echo "============================================================"
-    echo ""
-}
-
-# 主函数
+# --- 主程序 ---
 main() {
     print_header
+    prepare_environment
+    configure_mirrors
+    install_python_deps
+    download_project
+    setup_hybrid_script
+    configure_launcher
     
-    # 检查是否在 Termux 中运行
-    if [ ! -d "/data/data/com.termux" ]; then
-        print_error "此脚本必须在 Termux 中运行！"
-        exit 1
-    fi
-    
-    # 执行部署步骤
-    check_network
-    update_packages
-    install_dependencies
-    install_python_packages
-    download_autoglm
-    install_autoglm
-    download_hybrid_scripts
-    configure_grsai
-    create_launcher
-    check_helper_app
-    show_completion
+    echo ""
+    print_success "====== 部署全部完成 ======"
+    echo "请执行以下操作："
+    echo "1. 确保 AutoGLM Helper App 已在后台运行"
+    echo "2. 重启 Termux 或输入 source ~/.bashrc"
+    echo "3. 输入命令启动: autoglm"
 }
 
-# 运行主函数
 main
